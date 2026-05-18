@@ -2,7 +2,7 @@
 AI coding CLI for iOS app a-Shell
 
 # DISCLAIMER
-THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE. 
+THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE. If you havent guessed im looking for feedback :)
 
 # Features
 •  Full agentic tool use: read_file, write_file, run_command, list_files, search_files (ripgrep), patch_file
