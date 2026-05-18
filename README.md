@@ -1,4 +1,4 @@
-# ashell-code
+# shellclaude
 AI coding CLI for iOS app a-Shell
 
 # DISCLAIMER
@@ -40,3 +40,26 @@ THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE.
 •  iCloud sync warnings
 
 •  Single-file Python script
+
+# Security Concerns
+•  Full shell command execution via run_command (shell=True) — can run arbitrary commands if approved
+
+•  Filesystem access: agent can read and write almost any file in a-Shell’s sandbox
+
+•  Plugin system auto-executes arbitrary Python code from ~/Documents/shellclaude/plugins
+
+•  MCP servers allow connecting to external (potentially malicious) tool servers
+
+•  Persistent shellclaude.db stores full conversation history, including sensitive file contents and command outputs
+
+•  API key can fall back to plaintext JSON if Keychain fails or is not used
+
+•  Allowlist “always” entries can grant broad command permissions
+
+•  No automatic secret redaction in tool outputs sent back to the model
+
+•  Path validation exists but is not perfect (symlinks and edge cases possible)
+
+•  iOS sandbox is the main containment — agent cannot escape a-Shell
+
+# Use at your own risk. This tool intentionally gives powerful access to the LLM.
