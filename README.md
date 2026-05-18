@@ -6,8 +6,11 @@ THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE.
 
 #Features
 •  Full agentic tool use: read_file, write_file, run_command, list_files, search_files (ripgrep), patch_file
+
 •  Persistent SQLite sessions with /new, /load, /sessions, /delete, and auto cwd restore
+
 •  Session export to markdown (/export)
+
 •  iOS Keychain secure API key storage (/keychain set)
 •  Permission system + persistent allowlist for commands and file writes
 •  Colored unified diffs shown before every file modification
