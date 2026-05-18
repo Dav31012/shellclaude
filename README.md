@@ -1,5 +1,5 @@
 # shellclaude
-AI coding CLI for iOS app a-Shell
+AI coding CLI for iOS app a-Shell, written in python. 
 
 # DISCLAIMER
 THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE. If you havent guessed im looking for feedback :)
