@@ -9,13 +9,11 @@ AI coding CLI for iOS app a-Shell, written in python.
 THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE. If you havent guessed im looking for feedback :)
 
 # Features
-•  Full agentic tool use: read_file, write_file, run_command, list_files, search_files (ripgrep), patch_file
+•  Full agentic tool use: read_file, write_file, run_command, list_files, search_files (ripgrep), patch_file and web_search
 
 •  Persistent SQLite sessions with /new, /load, /sessions, /delete, and auto cwd restore
 
 •  Session export to markdown (/export)
-
-•  iOS Keychain secure API key storage (/keychain set)
 
 •  Permission system + persistent allowlist for commands and file writes
 
@@ -23,7 +21,7 @@ THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE. If you havent guessed im l
 
 •  Auto context compaction at 200k tokens (for now)
 
-•  Real-time session cost tracking (model-specific pricing)
+•  Real-time session cost tracking (model-specific pricing, very inaccurate)
 
 •  Full plugin system with auto-discovery
 
