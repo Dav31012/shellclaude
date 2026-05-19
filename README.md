@@ -1,6 +1,6 @@
 # shellclaude
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org)
+[![Python](https://img.shields.io/badge/Python-3-blue.svg)](https://www.python.org)
 ![Platform](https://img.shields.io/badge/Platform-iOS%20%2F%20iPadOS-brightgreen)
 AI coding CLI for iOS app a-Shell, written in python. 
 
