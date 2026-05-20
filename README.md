@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org)
 ![Platform](https://img.shields.io/badge/Platform-iOS%20%2F%20iPadOS-brightgreen)
 
-AI coding CLI for iOS app a-Shell, written in python. 
+AI coding CLI for a-Shell, written in python. 
 
 # DISCLAIMER
 THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE. If you havent guessed im looking for feedback :)
