@@ -11,13 +11,31 @@ If you havent guessed im looking for feedback :)
 
 ## Quick start
 
-I recommend installing rich for better UI
+### Install
 ```
 pip install rich
 cd ~/Documents
 curl -L https://raw.githubusercontent.com/dav31012/shellclaude/main/shellclaude.py -o shellclaude.py
-shellclaude.py
 ```
+### Running
+Paste the file into your current working directory and type shellclaude.py
+
+### Recommended packages
+You should install these packages for the best experience:
+
+• python3
+
+•git
+
+•sqlite3
+
+•llvm/clang
+
+•nnn
+
+•curl
+
+•base64 
 
 ## Features
 • Full agentic tool use: `read_file`, `write_file`, `run_command`, `list_files`, `search_files` (ripgrep), `patch_file`, `web_search`
