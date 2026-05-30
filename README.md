@@ -3,13 +3,10 @@
 [![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org)
 ![Platform](https://img.shields.io/badge/Platform-iOS%20%2F%20iPadOS-brightgreen)
 
-AI coding CLI for a-Shell, written in python. 
+AI coding CLI for a-Shell, written in python. Supports OpenAI and anthropic endpoints.
 
 # DISCLAIMER
 THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE. If you havent guessed im looking for feedback :)
-
-"Claude" and "Anthropic" are registered trademarks of Anthropic PBC. 
-The official Anthropic website can be found at https://www.anthropic.com.
 
 # Features
 •  Full agentic tool use: read_file, write_file, run_command, list_files, search_files (ripgrep), patch_file and web_search
@@ -67,3 +64,14 @@ The official Anthropic website can be found at https://www.anthropic.com.
 •  iOS sandbox is the main containment — agent cannot escape a-Shell
 
 # Use at your own risk. This tool intentionally gives powerful access to the LLM.
+
+## Legal Disclaimer
+This CLI is an independent, open-source project and is not affiliated, 
+associated, authorized, endorsed by, or in any way officially connected 
+with Anthropic PBC. 
+
+"Claude" and "Anthropic" are registered trademarks of Anthropic PBC. 
+This tool acts solely as a local interface utilizing the official Anthropic API 
+endpoints. Users are bound by Anthropic's Terms of Service and API consumer 
+agreements when using this software. The software is provided "as is", 
+without warranty of any kind.
