@@ -14,6 +14,7 @@ If you havent guessed im looking for feedback :)
 I recommend installing rich for better UI
 ```
 pip install rich
+cd ~/Documents
 curl -L https://raw.githubusercontent.com/dav31012/shellclaude/main/shellclaude.py -o shellclaude.py
 shellclaude.py
 ```
