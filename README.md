@@ -5,11 +5,11 @@
 
 AI coding CLI for a-Shell, written in python. Supports OpenAI and anthropic endpoints.
 
-# DISCLAIMER
+## DISCLAIMER
 Good readme conming soon.
 If you havent guessed im looking for feedback :)
 
-# Quick start
+## Quick start
 
 I recommend installing rich for better UI
 ```
@@ -19,7 +19,7 @@ curl -L https://raw.githubusercontent.com/dav31012/shellclaude/main/shellclaude.
 shellclaude.py
 ```
 
-# Features
+## Features
 • Full agentic tool use: `read_file`, `write_file`, `run_command`, `list_files`, `search_files` (ripgrep), `patch_file`, `web_search`
 
 • Persistent SQLite sessions with `/new`, `/load`, `/sessions`, `/delete` and auto cwd restore
@@ -44,11 +44,11 @@ shellclaude.py
 
 • iOS-specific error hints and soft cancel support
 
-# Plugins
+## Plugins
 
 Plugin template details in plugin.md
 
-# Security Concerns
+## Security Concerns
 
 •  Filesystem access: agent can read and write almost any file in a-Shell’s sandbox
 
