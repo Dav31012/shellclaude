@@ -12,9 +12,9 @@ If you havent guessed im looking for feedback :)
 # P.S.
 
 I recommend installing rich for better UI
-'''
+```
 pip install rich
-'''
+```
 
 # Features
 •  Full agentic tool use: read_file, write_file, run_command, list_files, search_files (ripgrep), patch_file and web_search
