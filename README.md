@@ -6,7 +6,7 @@
 AI coding CLI for a-Shell, written in python. Supports OpenAI and anthropic endpoints.
 
 # DISCLAIMER
-Im too lazy to update the readme. If you came across this project i think its best if you give it a chance. Its full of features.
+Im too lazy to update the readme at the moment. Good readme conming soonIf you came across this project i think its best if you give it a chance. Its full of features.
 If you havent guessed im looking for feedback :)
 
 # P.S.
