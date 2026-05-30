@@ -6,7 +6,7 @@
 AI coding CLI for a-Shell, written in python. Supports OpenAI and anthropic endpoints.
 
 # DISCLAIMER
-Im too lazy to update the readme at the moment. Good readme conming soonIf you came across this project i think its best if you give it a chance. Its full of features.
+Good readme conming soon.
 If you havent guessed im looking for feedback :)
 
 # P.S.
@@ -17,39 +17,33 @@ pip install rich
 ```
 
 # Features
-•  Full agentic tool use: read_file, write_file, run_command, list_files, search_files (ripgrep), patch_file and web_search
+• Full agentic tool use: `read_file`, `write_file`, `run_command`, `list_files`, `search_files` (ripgrep), `patch_file`, `web_search`
 
-•  Persistent SQLite sessions with /new, /load, /sessions, /delete, and auto cwd restore
+• Persistent SQLite sessions with `/new`, `/load`, `/sessions`, `/delete` and auto cwd restore
 
-•  Session export to markdown (/export)
+• Streaming responses with Rich UI (live markdown + syntax highlighting) + ANSI fallback
 
-•  Permission system + persistent allowlist for commands and file writes
+• Colored unified diffs + automatic backups before file writes
 
-•  Colored unified diffs shown before every file modification
+• Permission system + persistent allowlist for commands and file operations
 
-•  Auto context compaction at 200k tokens (for now)
+• AGENTS.md auto-discovery from project directory
 
-•  Real-time session cost tracking (model-specific pricing, very inaccurate)
+• Plugin system + MCP (Model Context Protocol) support
 
-•  Full plugin system with auto-discovery
+• Interactive file picker (`/pick`)
 
-•  MCP server support (connect external tool servers)
+• Session branching, tagging, and export to markdown
 
-•  Interactive file picker (/pick)
+• Auto context compaction + real-time cost tracking
 
-•  Direct file and command injection (/read, /run)
+• Strong protected paths (prevents self-modification)
 
-•  Custom system prompt with /system
+• iOS-specific error hints and soft cancel support
 
-•  Output format modes: JSON, YAML, or none
+# Plugins
 
-•  Runtime config switching (/model, /url, /config)
-
-•  Protected paths (prevents self-modification of config, db, and plugins)
-
-•  iCloud sync warnings
-
-•  Single-file Python script
+Plugin template details in plugin.md
 
 # Security Concerns
 
