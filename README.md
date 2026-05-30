@@ -9,6 +9,13 @@ AI coding CLI for a-Shell, written in python. Supports OpenAI and anthropic endp
 Im too lazy to update the readme. If you came across this project i think its best if you give it a chance. Its full of features.
 If you havent guessed im looking for feedback :)
 
+# P.S.
+
+I recommend installing rich for better UI
+'''
+pip install rich
+'''
+
 # Features
 •  Full agentic tool use: read_file, write_file, run_command, list_files, search_files (ripgrep), patch_file and web_search
 
