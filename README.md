@@ -7,6 +7,8 @@ AI coding CLI for a-Shell, written in python.
 
 # DISCLAIMER
 THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE. If you havent guessed im looking for feedback :)
+"Claude" and "Anthropic" are registered trademarks of Anthropic PBC. 
+The official Anthropic website can be found at https://www.anthropic.com.
 
 # Features
 •  Full agentic tool use: read_file, write_file, run_command, list_files, search_files (ripgrep), patch_file and web_search
@@ -44,7 +46,6 @@ THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE. If you havent guessed im l
 •  Single-file Python script
 
 # Security Concerns
-•  Full shell command execution via run_command (shell=True) — can run arbitrary commands if approved
 
 •  Filesystem access: agent can read and write almost any file in a-Shell’s sandbox
 
