@@ -33,8 +33,6 @@ You should install these packages for the best experience:
 
 •nnn
 
-•curl
-
 •base64 
 
 ## Features
