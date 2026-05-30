@@ -7,6 +7,7 @@ AI coding CLI for a-Shell, written in python.
 
 # DISCLAIMER
 THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE. If you havent guessed im looking for feedback :)
+
 "Claude" and "Anthropic" are registered trademarks of Anthropic PBC. 
 The official Anthropic website can be found at https://www.anthropic.com.
 
