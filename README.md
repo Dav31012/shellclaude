@@ -9,11 +9,13 @@ AI coding CLI for a-Shell, written in python. Supports OpenAI and anthropic endp
 Good readme conming soon.
 If you havent guessed im looking for feedback :)
 
-# P.S.
+# Quick start
 
 I recommend installing rich for better UI
 ```
 pip install rich
+curl -L https://raw.githubusercontent.com/dav31012/shellclaude/main/shellclaude.py -o shellclaude.py
+shellclaude.py
 ```
 
 # Features
