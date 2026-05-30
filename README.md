@@ -5,8 +5,8 @@
 
 AI coding CLI for a-Shell, written in python. Supports OpenAI and anthropic endpoints.
 
-# DISCLAIMER
-THIS PYTHON CLI IS STILL IN A *VERY* PRIMITIVE STATE. If you havent guessed im looking for feedback :)
+# P.S.
+If you havent guessed im looking for feedback :)
 
 # Features
 •  Full agentic tool use: read_file, write_file, run_command, list_files, search_files (ripgrep), patch_file and web_search
