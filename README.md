@@ -23,8 +23,6 @@ Paste the file into your current working directory and type shellclaude.py
 ### Recommended packages
 You should install these packages for the best experience:
 
-• python3
-
 •git
 
 •sqlite3
