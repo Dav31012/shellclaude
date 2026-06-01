@@ -16,6 +16,7 @@ If you havent guessed im looking for feedback :)
 pip install rich
 cd ~/Documents
 curl -L https://raw.githubusercontent.com/dav31012/shellclaude/main/shellclaude.py -o shellclaude.py
+shellclaude.py
 ```
 ### Running
 Paste the file into your current working directory and type shellclaude.py
