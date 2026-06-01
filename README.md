@@ -72,7 +72,7 @@ Plugin template details in plugin.md
 
 •  Persistent shellclaude.db stores full conversation history, including sensitive file contents and command outputs
 
-•  API key can fall back to plaintext JSON if Keychain fails or is not used
+•  API key can fall back to plaintext JSON if it fails
 
 •  Allowlist “always” entries can grant broad command permissions
 
