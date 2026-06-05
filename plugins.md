@@ -33,5 +33,7 @@ def run(args: dict) -> str:
 
 ## Rules
 •  Must define TOOL_DEF and run(args: dict) -> str
+
 •  Filename must end in .py and not start with _
+
 •  Placed in ~/Documents/shellclaude/plugins/
