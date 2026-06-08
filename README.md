@@ -154,7 +154,7 @@ Tool calls get colored labels: gathering, acting, verifying. You know what the m
 ### Context management
 - **Auto-compaction**: Old messages summarize automatically when you approach the model's context limit (~80%)
 - **Pinned messages**: `/pin` marks context that survives compaction
-- **Cost tracking**: Running dollar total per session
+- **Cost tracking**: Running dollar total per session (wildly inaccurate, trying to fix)
 - **Context bar**: Token usage as a visual percentage
 
 ### Project detection
