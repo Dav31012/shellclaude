@@ -13,6 +13,8 @@ shellclaude v1.5.0
 
 ```bash
 pip install rich
+cd ~/Documents
+curl -fsSL https://raw.githubusercontent.com/dav31012/shellclaude/main/shellclaude.py -o shellclaude.py
 # openai type endpoint
 export OPENAI_API_KEY=
 #anthropic endpoint
@@ -35,8 +37,6 @@ shellclaude exposes these to the model:
 - **web_search** — DuckDuckGo search
 - **read_url** — fetch docs or GitHub raw files, strips HTML
 - **run_python** — Python 3 snippets with traceback parsing
-- **run_node** — JavaScript via Node.js
-- **run_rust** — cargo check/build/test/clippy with error highlighting
 
 Cancel a running turn with `c` + Enter.
 
@@ -229,21 +229,7 @@ Priority: `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` env vars beat config file. Env 
 
 ## Plugins
 
-Drop Python files in `~/Documents/shellclaude/plugins/`. Each needs:
-
-```python
-TOOL_DEF = {
-    "type": "function",
-    "function": {
-        "name": "my_tool",
-        "description": "...",
-        "parameters": {"type": "object", "properties": {...}}
-    }
-}
-
-def run(args: dict) -> str:
-    return "result"
-```
+Check [plugins.md](https://github.com/Dav31012/shellclaude/blob/main/plugins.md)
 
 ## Skills
 
