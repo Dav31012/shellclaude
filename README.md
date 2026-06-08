@@ -13,8 +13,11 @@ shellclaude v1.5.0
 
 ```bash
 pip install rich
-export OPENAI_API_KEY=sk-...
-python3 shellclaude.py
+# openai type endpoint
+export OPENAI_API_KEY=
+#anthropic endpoint
+export ANTHROPIC_API_KEY=
+shellclaude.py
 ```
 
 First run sets up your model and endpoint. Settings save to `~/Documents/shellclaude.json`.
@@ -198,7 +201,7 @@ SQLite at `~/Documents/shellclaude.db`:
   "api_key": "",
   "base_url": "https://api.openai.com/v1",
   "model": "gpt-4o",
-  "max_tokens": 262144,
+  "max_tokens": 8192,
   "temperature": 0.8,
   "system": "",
   "format": "none",
