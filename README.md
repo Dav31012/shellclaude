@@ -5,9 +5,7 @@
 
 Terminal coding tool for [a-Shell](https://github.com/holzschu/a-Shell) on iOS. Supports OpenAI, Anthropic, and compatible endpoints.
 
-```
-shellclaude v1.5.0
-```
+## shellclaude v1.5.0
 
 ## Quick start
 
@@ -254,6 +252,14 @@ Drop `.md` files in `~/Documents/shellclaude/personas/`. Switch with `/persona <
 - Python 3.13+
 - `rich` (optional, for colors)
 - API key for OpenAI, Anthropic, or compatible endpoint
+
+## Legal disclaimer
+
+"shellclaude" is an independent, open-source project. It is not affiliated with,
+endorsed by, or sponsored by Anthropic PBC. "Claude" is a trademark of
+Anthropic PBC. This tool uses Anthropic's API and is inspired by the general
+concept of agentic coding assistants, but is not Claude Code or any other
+Anthropic product.
 
 ## License
 
