@@ -3,9 +3,9 @@
 [![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org)
 ![Platform](https://img.shields.io/badge/Platform-iOS%20%2F%20iPadOS-brightgreen)
 
-Terminal coding tool for [a-Shell](https://github.com/holzschu/a-Shell) on iOS. Supports OpenAI, Anthropic, and compatible endpoints.
+Terminal coding tool for [a-Shell](https://github.com/holzschu/a-Shell). Supports OpenAI, Anthropic, and compatible endpoints.
 
-## shellclaude v1.5.0
+## shellclaude v1.6.0
 
 ## Quick start
 
@@ -13,9 +13,9 @@ Terminal coding tool for [a-Shell](https://github.com/holzschu/a-Shell) on iOS. 
 pip install rich
 cd ~/Documents
 curl -fsSL https://raw.githubusercontent.com/dav31012/shellclaude/main/shellclaude.py -o shellclaude.py
-# openai type endpoint
+# OpenAI-compatible endpoint
 export OPENAI_API_KEY=
-#anthropic endpoint
+# Anthropic endpoint
 export ANTHROPIC_API_KEY=
 shellclaude.py
 ```
@@ -29,12 +29,14 @@ shellclaude exposes these to the model:
 - **read_file** — read code or configs, with line ranges for big files
 - **write_file** — create or overwrite files (shows diff first, makes .bak)
 - **patch_file** — surgical edits, preferred over write_file for changes
-- **run_command** — shell commands, 30s timeout, pipes blocked for safety
+- **run_command** — shell commands; pipes blocked for a-Shell compatibility
 - **search_files** — ripgrep across your project, respects .gitignore
 - **list_files** — directory listing, recursive capped at 3000 entries
-- **web_search** — DuckDuckGo search
+- **web_search** — DuckDuckGo search with UA rotation and retry
 - **read_url** — fetch docs or GitHub raw files, strips HTML
 - **run_python** — Python 3 snippets with traceback parsing
+- **run_c** — compile and run C via clang (-std=c11). Requires `pkg install clang`
+- **run_cpp** — compile and run C++ via clang++ (-std=c++17). Requires `pkg install clang`
 
 Cancel a running turn with `c` + Enter.
 
@@ -54,7 +56,7 @@ Cancel a running turn with `c` + Enter.
 | Command | What it does |
 |---------|--------------|
 | `/new [name]` | New session |
-| `/sessions` | List past sessions |
+| `/sessions [tag]` | List past sessions, optionally filtered by tag |
 | `/load <id>` | Load a session |
 | `/delete <id>` | Delete one |
 | `/clear` | Wipe context, keep session |
@@ -154,7 +156,7 @@ Tool calls get colored labels: gathering, acting, verifying. You know what the m
 ### Context management
 - **Auto-compaction**: Old messages summarize automatically when you approach the model's context limit (~80%)
 - **Pinned messages**: `/pin` marks context that survives compaction
-- **Cost tracking**: Running dollar total per session (wildly inaccurate, trying to fix)
+- **Cost tracking**: Running dollar total per session, tracked per message
 - **Context bar**: Token usage as a visual percentage
 
 ### Project detection
@@ -163,14 +165,20 @@ Auto-detects Cargo.toml, package.json, pyproject.toml, go.mod, and others. Pulls
 ### AGENTS.md
 Drop an `AGENTS.md` in your project root. shellclaude finds it up the directory tree, loads it, and appends the rules to the system prompt. Capped at 8000 chars. Checks for injection patterns. Reloads on directory change.
 
+### Web search
+Uses `html.duckduckgo.com/html/` -- the stable static DDG page. No API key needed. Rotates user-agents, retries with backoff on failure, surfaces errors instead of returning empty results silently.
+
+### C and C++
+`run_c` and `run_cpp` compile via a-Shell's clang package. Install once with `pkg install clang`. Compile errors are shown separately from runtime output. Pass extra flags like `-lm` or `-O2` via the `flags` parameter. Compiler output-redirecting flags (`-o`, `-MF`, `-include`, etc.) are stripped automatically.
+
 ### Security
-- **SSRF protection**: Blocks private IPs and metadata endpoints in URL fetching
-- **Sensitive files**: Blocks reads of .env, .pem, credentials, SSH keys
+- **SSRF protection**: Blocks private IPs and metadata endpoints in URL fetching and MCP connections
+- **Sensitive files**: Blocks reads of .env, .pem, credentials, SSH keys, and the command allowlist
 - **Safe mode**: Every tool call needs confirmation
 - **Diff mode**: Preview changes without writing
 - **Allowlist**: Auto-approve trusted commands with prefix wildcards (`cargo *`)
 - **Symlink checks**: Warns if config resolves outside ~/Documents
-- **Blocked patterns**: 31 dangerous constructs (rm -rf /, sudo, credential exfiltration, etc.)
+- **Blocked patterns**: Dangerous constructs blocked -- rm -rf /, sudo, credential exfiltration, semicolon chaining, and more
 - **a-Shell safety**: Pipes, command substitution, background jobs, and here-strings are blocked. These hang a-Shell permanently because it runs everything in a single process.
 
 ### Session persistence
@@ -188,7 +196,7 @@ SQLite at `~/Documents/shellclaude.db`:
 - **Packages**: `pkg install <name>` for WASM commands
 - **No bash**: POSIX `sh` only
 - **No pipes**: Single-process architecture
-- **BSD tools**: `sed -i ''`, `grep -E`, `date -v` — not GNU
+- **BSD tools**: `sed -i ''`, `grep -E`, `date -v` -- not GNU
 - **C/C++**: Compiles to WASM via `clang`. No sockets, no fork
 - **Git**: Uses `lg2` (libgit2 wrapper)
 
@@ -219,6 +227,7 @@ Priority: `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` env vars beat config file. Env 
 ├── shellclaude.json      # Config
 ├── shellclaude.db        # Session database
 ├── allowlist.txt         # Command allowlist
+├── .tmp/                 # Temp files for run_c, run_cpp, run_python
 ├── plugins/              # Python plugin files
 ├── snippets/             # Saved responses
 ├── personas/             # Persona .md files
@@ -241,9 +250,9 @@ Drop `.md` files in `~/Documents/shellclaude/personas/`. Switch with `/persona <
 
 - **API keys**: Config stores plaintext. On iOS this may sync to iCloud. Use env vars instead.
 - **Plugins**: Run with full Python stdlib access. Only install what you trust.
-- **MCP servers**: Your conversation goes to the server. Use HTTPS only.
+- **MCP servers**: Non-HTTPS MCP URLs are rejected for non-localhost URLs.
 - **History**: `shellclaude.db` stores everything unencrypted.
-- **Secrets**: No automatic redaction. Don't paste credentials into chat.
+- **Secrets**: No automatic redaction in chat input. Don't paste credentials into the conversation.
 - **Paths**: Protected paths stop self-modification, but symlink edge cases might exist.
 
 ## Requirements
@@ -264,4 +273,3 @@ Anthropic product.
 ## License
 
 MIT
-
