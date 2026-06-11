@@ -19,7 +19,6 @@ export OPENAI_API_KEY=
 export ANTHROPIC_API_KEY=
 shellclaude.py
 ```
-
 First run sets up your model and endpoint. Settings save to `~/Documents/shellclaude/shellclaude.json`.
 
 # VERY IMPORTANT
@@ -185,7 +184,7 @@ Uses `html.duckduckgo.com/html/` -- the stable static DDG page. No API key neede
 - **a-Shell safety**: Pipes, command substitution, background jobs, and here-strings are blocked. These hang a-Shell permanently because it runs everything in a single process.
 
 ### Session persistence
-SQLite at `~/Documents/shellclaude.db`:
+SQLite at `~/Documents/shellclaude/shellclaude.db`:
 - Full message history
 - Working directory restoration
 - Branching and tagging
