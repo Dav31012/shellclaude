@@ -27,8 +27,8 @@ except ImportError:
 
 # CONFIG
 
-CFG_PATH = os.path.expanduser("~/Documents/shellclaude.json")
-DB_PATH  = os.path.expanduser("~/Documents/shellclaude.db")
+CFG_PATH = os.path.expanduser("~/Documents/shellclaude/shellclaude.json")
+DB_PATH  = os.path.expanduser("~/Documents/shellclaude/shellclaude.db")
 ALLOWLIST_PATH = os.path.expanduser("~/Documents/shellclaude/allowlist.txt")
 
 DEFAULT_CFG = {
@@ -2863,6 +2863,7 @@ def main():
         pr_dim(f"  Reconnecting MCP '{name}'…")
         tools = mcp_discover(url)
         MCP_SERVERS[name] = {"url": url, "tools": tools}
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = db_init()
     sid  = db_new_session(conn)
     msgs = []
