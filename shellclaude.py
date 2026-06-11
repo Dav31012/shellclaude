@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""shellclaude v1.5.0 — Inspired by opencode and openclaude. Supports OpenAI-compatible and Anthropic endpoints."""
+"""shellclaude v1.6.0 — Inspired by opencode and openclaude. Supports OpenAI-compatible and Anthropic endpoints."""
 
 import os, json, sqlite3, subprocess, difflib, time, hashlib, importlib.util, re, random, shlex
 from contextlib import nullcontext
