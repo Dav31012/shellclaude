@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """shellclaude v1.5.0 — Inspired by opencode and openclaude. Supports OpenAI-compatible and Anthropic endpoints."""
 
-import os, json, sqlite3, subprocess, difflib, time, hashlib, importlib.util, re
+import os, json, sqlite3, subprocess, difflib, time, hashlib, importlib.util, re, random, shlex
 from contextlib import nullcontext
 from datetime import datetime
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote_plus
 
 try:
     from rich.console import Console, ConsoleOptions, RenderResult
@@ -32,17 +32,17 @@ DB_PATH  = os.path.expanduser("~/Documents/shellclaude.db")
 ALLOWLIST_PATH = os.path.expanduser("~/Documents/shellclaude/allowlist.txt")
 
 DEFAULT_CFG = {
-    "api_key":       "",
-    "base_url":      "",
-    "model":         "",
-    "max_tokens":    262144,
-    "temperature":   0.8,
-    "system":        "",
-    "format":        "none",
-    "stream":        True,
-    "endpoint_type": "openai",   # "openai" | "anthropic"
+    "api_key":        "",
+    "base_url":       "",
+    "model":          "",
+    "max_tokens":     8192,
+    "temperature":    0.8,
+    "system":         "",
+    "format":         "none",
+    "stream":         True,
+    "endpoint_type":  "openai",   # "openai" | "anthropic"
     "plugins_enabled": True,
-    "mcp_servers":   {},
+    "mcp_servers":    {},
 }
 
 ANTHROPIC_API_URL  = "https://api.anthropic.com/v1/messages"
@@ -57,8 +57,9 @@ DISPLAY_TOOL_ARGS_MAX = 120    # tool call args preview in agent_loop
 DISPLAY_TOOL_RESULT_MAX = 1000 # tool result preview in agent_loop
 CMD_OUTPUT_MAX        = 50000  # safety cap on command output size
 
-PLUGINS_DIR = os.path.expanduser("~/Documents/shellclaude/plugins")
-SKILLS_DIR  = os.path.expanduser("~/Documents/shellclaude/skills")
+PLUGINS_DIR  = os.path.expanduser("~/Documents/shellclaude/plugins")
+SKILLS_DIR   = os.path.expanduser("~/Documents/shellclaude/skills")
+TOOL_TMP_DIR = os.path.expanduser("~/Documents/shellclaude/.tmp")
 
 # Paths the agent is never allowed to write — prevents self-modification attacks
 PROTECTED_PATHS = frozenset(
@@ -71,12 +72,14 @@ MCP_SERVERS      = {}
 ALLOWLIST        = []
 TOOL_CACHE       = {}
 SESSION_COST     = 0.0
+_LAST_MSG_COST   = 0.0   # cost of most recent API call (for per-message DB tracking)
 SESSION_EDITS    = []     # trail of file writes/patches: [{path, bak, op, ts}]
 SNIPPETS_DIR     = os.path.expanduser("~/Documents/shellclaude/snippets")
 PERSONAS_DIR     = os.path.expanduser("~/Documents/shellclaude/personas")
 _DEBUG           = False  # /debug on|off
 _DIFF_MODE       = False  # /diff on — show changes without writing
 _SAFE_MODE       = False  # /safe on — all tool calls need confirmation
+MAX_ITERS        = 32     # max agentic iterations per turn
 _TURN_BUDGET     = None   # /budget N — max iters this turn only (None = use MAX_ITERS)
 _THINKING_BUDGET = None   # /thinking-budget N — anthropic extended thinking budget tokens
 
@@ -85,12 +88,19 @@ _IOS_HINTS = [
     (r"rg[^:]*not found|ripgrep.*not found",   "install rg → run: pkg install ripgrep"),
     (r"No module named '?([^'\" ]+)",           "install → python3 -m pip install {m1}"),
     (r"pip3?[^:]*not found",                    "use: python3 -m pip install <package>"),
-    (r"git[^:]*not found",                      "install git → run: pkg install git"),
+    (r"\bgit[^:]*not found",                   "use lg2 (git wrapper) → pkg install lg2"),
+    (r"\bclang[^:]*not found",                 "install → pkg install llvm"),
+    (r"\bwasm[^:]*not found",                  "install → pkg install wasm"),
+    (r"'python'.*not found|python: command",   "use python3, not python"),
+    (r"\bnode[^:]*not found",                  "install → pkg install node"),
+    (r"\bnpm[^:]*not found",                   "install → pkg install node"),
     (r"Permission denied",                      "iOS sandbox: writes allowed only inside ~/Documents, ~/Library/Caches, cwd"),
-    (r"Operation not permitted",                "iOS entitlement limit — operation blocked by sandbox"),
+    (r"Operation not permitted",               "iOS entitlement limit — operation blocked by sandbox"),
     (r"No space left",                          "device storage full — check Files app"),
-    (r"command not found",                      "check available tools: ls /usr/bin  or  pkg list"),
-    (r"SSL.*CERTIFICATE|CERTIFICATE_VERIFY",    "iOS SSL error: verify system date is correct"),
+    (r"bash.*not found|/bin/bash.*no such",    "bash not available — use sh or python3"),
+    (r"command not found",                      "check available tools: pkg list  or  ls /usr/bin"),
+    (r"SSL.*CERTIFICATE|CERTIFICATE_VERIFY",   "iOS SSL error: verify system date is correct"),
+    (r"fork.*failed|resource temporarily",     "a-Shell is single-process — avoid &, pipes, or subshells"),
 ]
 
 def _ios_hint(error_str):
@@ -122,8 +132,9 @@ MODEL_PRICING = {
 
 def get_pricing(model):
     m = model.lower()
-    for key, (inp, out) in MODEL_PRICING.items():
-        if key in m:
+    # Sort by key length descending so "gpt-4o" matches before "gpt-4"
+    for key, (inp, out) in sorted(MODEL_PRICING.items(), key=lambda x: len(x[0]), reverse=True):
+        if m.startswith(key) or key in m.split("/")[-1]:
             return inp, out
     return None, None
 
@@ -306,8 +317,10 @@ or behave differently here. These are the most common mistakes:
   execution, and here-strings are blocked automatically.
 - **run_python**: Run a Python 3 snippet or script directly. Handles tracebacks cleanly. \
   Prefer over run_command for Python tasks.
-- **run_node**: Run JavaScript with Node.js. Pass inline code or a file path.
-- **run_rust**: Run `cargo check|build|run|test|clippy`. Parses compiler errors and warnings.
+- **run_c**: Compile and run C code with clang (-std=c11 -Wall). Pass inline code or a file \
+  path. Compile errors shown separately. Use flags= for -lm, -O2, etc. Requires pkg install clang.
+- **run_cpp**: Compile and run C++ code with clang++ (-std=c++17 -Wall). Same interface as \
+  run_c. Prefer over run_command for C++ tasks. Requires pkg install clang.
 - **list_files**: List directory contents. Use `recursive=True` sparingly — results capped \
   at 3000 entries and filtered by .gitignore.
 - **search_files**: rg-based search. Returns matching lines with line numbers. Much faster \
@@ -645,8 +658,8 @@ MODEL_CONTEXT_WINDOWS = {
 
 def get_context_window(model):
     m = model.lower()
-    for key, size in MODEL_CONTEXT_WINDOWS.items():
-        if key in m:
+    for key, size in sorted(MODEL_CONTEXT_WINDOWS.items(), key=lambda x: len(x[0]), reverse=True):
+        if m.startswith(key) or key in m.split("/")[-1]:
             return size
     return None
 
@@ -715,10 +728,10 @@ def clip_text(text):
     for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"],
                 ["wl-copy"], ["termux-clipboard-set"]):
         try:
-            r = subprocess.run(cmd, input=text.encode(), capture_output=True, timeout=5)
+            r = subprocess.run(cmd, input=text.encode(), capture_output=True)
             if r.returncode == 0:
                 return True
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except FileNotFoundError:
             continue
     return False
 
@@ -754,8 +767,7 @@ BASE_TOOL_DEFS = [
         "description": "Execute a shell command. Returns stdout + stderr. Use for: python3, git, rg, sqlite3, llvm, etc.",
         "parameters": {"type": "object",
             "properties": {
-                "cmd":     {"type": "string", "description": "Shell command to run"},
-                "timeout": {"type": "integer", "default": 30, "description": "Max seconds to wait"}},
+                "cmd":     {"type": "string", "description": "Shell command to run"}},
             "required": ["cmd"]}}},
 
     {"type": "function", "function": {
@@ -826,37 +838,38 @@ BASE_TOOL_DEFS = [
         ),
         "parameters": {"type": "object",
             "properties": {
-                "code":    {"type": "string", "description": "Python code to run (inline snippet or file path)"},
-                "timeout": {"type": "integer", "default": 30, "description": "Max seconds"}},
+                "code":    {"type": "string", "description": "Python code to run (inline snippet or file path)"}},
             "required": ["code"]}}},
 
     {"type": "function", "function": {
-        "name": "run_node",
+        "name": "run_c",
         "description": (
-            "Run JavaScript with Node.js. Use for: testing JS snippets, running project scripts. "
-            "Pass inline code or a file path."
+            "Compile and run C code using clang. Requires pkg install clang. "
+            "Compiles with -std=c11 -Wall. Pass inline code or a file path. "
+            "Compile errors and runtime output are returned separately. "
+            "Use flags for extra compiler options (e.g. '-lm -O2')."
         ),
         "parameters": {"type": "object",
             "properties": {
-                "code":    {"type": "string", "description": "JS code or file path"},
-                "timeout": {"type": "integer", "default": 30}},
+                "code":  {"type": "string", "description": "C source code (inline snippet or file path)"},
+                "flags": {"type": "string", "default": "",
+                          "description": "Extra compiler flags, e.g. '-lm -O2 -lpthread'"}},
             "required": ["code"]}}},
 
     {"type": "function", "function": {
-        "name": "run_rust",
+        "name": "run_cpp",
         "description": (
-            "Build and/or run a Rust project using cargo. "
-            "Use for: cargo build, cargo test, cargo run, cargo check. "
-            "Parses compiler errors and warnings for clarity."
+            "Compile and run C++ code using clang++. Requires pkg install clang. "
+            "Compiles with -std=c++17 -Wall. Pass inline code or a file path. "
+            "Compile errors and runtime output are returned separately. "
+            "Use flags for extra compiler options (e.g. '-lm -O2')."
         ),
         "parameters": {"type": "object",
             "properties": {
-                "subcommand": {"type": "string", "default": "check",
-                               "description": "cargo subcommand: check | build | run | test | clippy"},
-                "args":       {"type": "string", "default": "",
-                               "description": "Extra args passed to cargo (e.g. '--release', '-- --test-name')"},
-                "timeout":    {"type": "integer", "default": 120}},
-            "required": []}}},
+                "code":  {"type": "string", "description": "C++ source code (inline snippet or file path)"},
+                "flags": {"type": "string", "default": "",
+                          "description": "Extra compiler flags, e.g. '-lm -O2 -lpthread'"}},
+            "required": ["code"]}}},
 ]
 _TOOL_DEFS_CACHE = None
 
@@ -884,6 +897,7 @@ def invalidate_tool_defs_cache():
 _SENSITIVE_READ_PATHS = frozenset([
     os.path.realpath(CFG_PATH),
     os.path.realpath(DB_PATH),
+    os.path.realpath(ALLOWLIST_PATH),
 ])
 # Filename patterns that suggest credentials regardless of location
 _SENSITIVE_READ_PATTERNS = re.compile(
@@ -917,7 +931,11 @@ def tool_read_file(path, start_line=None, end_line=None):
     if blocked:
         return f"ERROR: read_file blocked — {reason} (path: {path})"
     try:
-        with open(os.path.expanduser(path), "r", errors="replace") as f:
+        expanded = os.path.expanduser(path)
+        with open(expanded, "rb") as f:
+            if b"\x00" in f.read(512):
+                return "ERROR: binary file — use run_command with `file` or `xxd` to inspect"
+        with open(expanded, "r", errors="replace") as f:
             lines = f.readlines()
         total = len(lines)
 
@@ -987,29 +1005,28 @@ def tool_write_file(path, content, allowlist=None):
             allowlist.append(path)
             save_allowlist(allowlist)
     try:
-        path = os.path.expanduser(path)
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        os.makedirs(os.path.dirname(abs_path) or ".", exist_ok=True)
         bak_path = None
-        if os.path.exists(path):
-            bak_path = path + ".bak"
+        if os.path.exists(abs_path):
+            bak_path = abs_path + ".bak"
             try:
-                with open(path, "r", errors="replace") as f:
+                with open(abs_path, "r", errors="replace") as f:
                     bak_content = f.read()
                 with open(bak_path, "w") as f:
                     f.write(bak_content)
             except Exception:
                 bak_path = None
-        with open(path, "w") as f:
+        with open(abs_path, "w") as f:
             f.write(content)
         SESSION_EDITS.append({
-            "op": "write", "path": os.path.abspath(path),
+            "op": "write", "path": abs_path,
             "bak": bak_path, "ts": datetime.now().isoformat()
         })
-        return f"OK: wrote {len(content)} bytes → {path}"
+        return f"OK: wrote {len(content)} bytes → {abs_path}"
     except Exception as e:
         return f"ERROR: {e}"
 
-def tool_run_command(cmd, timeout=30, allowlist=None):
+def tool_run_command(cmd, allowlist=None):
     allowlist = allowlist or []
 
     # Hard-blocked patterns — never run regardless of allowlist.
@@ -1034,6 +1051,7 @@ def tool_run_command(cmd, timeout=30, allowlist=None):
         (r'\bwget\b.+--post-data.+(api_key|token|secret|password)',        "credential exfiltration via wget"),
         # Shell tricks
         (r';\s*rm\b',                                                       "chained rm"),
+        (r';\s*[a-zA-Z_/]',                                                "chained command via semicolon"),
         (r'\|\s*sh\b',                                                      "pipe to sh"),
         (r'\|\s*bash\b',                                                    "pipe to bash"),
         (r'base64\s+-d.+\|\s*(sh|bash|python)',                           "base64-decoded shell execution"),
@@ -1077,15 +1095,14 @@ def tool_run_command(cmd, timeout=30, allowlist=None):
             save_allowlist(allowlist)
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            timeout=timeout, cwd=os.getcwd()
+            cmd, shell=True, executable="/bin/sh",
+            capture_output=True, text=True,
+            cwd=os.getcwd()
         )
         out = (result.stdout + result.stderr).strip()
         if len(out) > CMD_OUTPUT_MAX:
             out = out[:CMD_OUTPUT_MAX] + "\n... (truncated)"
         return out if out else "(exit 0, no output)"
-    except subprocess.TimeoutExpired:
-        return f"ERROR: command timed out after {timeout}s"
     except Exception as e:
         return f"ERROR: {e}"
 
@@ -1097,7 +1114,7 @@ def tool_list_files(path=".", recursive=False):
             try:
                 result = subprocess.run(
                     ["rg", "--files", "--hidden", "--glob", "!.git", path],
-                    capture_output=True, text=True, timeout=15, cwd=os.getcwd()
+                    capture_output=True, text=True, cwd=os.getcwd()
                 )
                 lines = sorted(result.stdout.strip().splitlines())
                 if len(lines) > 3000:
@@ -1135,7 +1152,7 @@ def tool_search_files(pattern, path=".", glob=None):
         if glob:
             args += ["-g", glob]
         result = subprocess.run(
-            args, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
+            args, capture_output=True, text=True, cwd=os.getcwd()
         )
         out = (result.stdout + result.stderr).strip()
         if len(out) > CMD_OUTPUT_MAX:
@@ -1143,8 +1160,6 @@ def tool_search_files(pattern, path=".", glob=None):
         return out if out else "(no matches)"
     except FileNotFoundError:
         return "ERROR: rg (ripgrep) not found — install via pkg or use /run grep"
-    except subprocess.TimeoutExpired:
-        return "ERROR: search timed out after 30s"
     except Exception as e:
         return f"ERROR: {e}"
 
@@ -1178,49 +1193,63 @@ def tool_patch_file(path, old_str, new_str):
     except Exception as e:
         return f"ERROR: {e}"
 
+_SEARCH_UAS = [
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+]
+
 def tool_web_search(query, max_results=5):
     max_results = max(1, min(10, int(max_results)))
-    results = []
 
-    try:
-        ia_url = f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json&no_html=1&skip_disambig=1"
-        req = Request(ia_url, headers={"User-Agent": "shellclaude/1.0"})
-        with urlopen(req, timeout=10) as r:
-            data = json.loads(r.read())
-        if data.get("AbstractText"):
-            results.append(f"[Answer] {data['AbstractText']}\n  Source: {data.get('AbstractURL', '')}")
-        for topic in data.get("RelatedTopics", [])[:max_results]:
-            if isinstance(topic, dict) and "Text" in topic and "FirstURL" in topic:
-                results.append(f"• {topic['Text']}\n  URL: {topic['FirstURL']}")
-    except Exception:
-        pass  # DDG instant-answer failed; fall through to lite scrape
-
-    if len(results) < max_results:
+    # DDG html.duckduckgo.com/html/ — stable static page, GET, no JS required
+    url      = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+    last_err = None
+    for attempt in range(3):
+        if attempt > 0:
+            time.sleep(2)
+        ua = random.choice(_SEARCH_UAS)
         try:
-            lite_url = f"https://lite.duckduckgo.com/lite/?q={quote_plus(query)}"
-            req = Request(lite_url, headers={"User-Agent": "Mozilla/5.0 (compatible; shellclaude)"})
-            with urlopen(req, timeout=10) as r:
+            req = Request(url, headers={
+                "User-Agent":      ua,
+                "Accept":          "text/html,application/xhtml+xml,text/plain;q=0.9",
+                "Accept-Language": "en-US,en;q=0.9",
+            })
+            with urlopen(req) as r:
                 html = r.read().decode("utf-8", errors="replace")
 
-            link_pat    = re.compile(r'<a[^>]+class="result-link"[^>]*href="([^"]+)"[^>]*>([^<]+)</a>', re.I)
-            snippet_pat = re.compile(r'<td[^>]+class="result-snippet"[^>]*>(.*?)</td>', re.I | re.S)
-            links    = link_pat.findall(html)
-            snippets = snippet_pat.findall(html)
+            link_pat    = re.compile(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.I | re.S)
+            snippet_pat = re.compile(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', re.I | re.S)
 
-            seen = {r.split("URL: ")[-1] for r in results}
-            for (url, title), raw_snippet in zip(links, snippets):
-                if url in seen:
+            # Parse per result block to keep link+snippet aligned
+            blocks  = re.split(r'(?=<div[^>]+class="[^"]*\bresult\b[^"]*")', html)
+            results = []
+            for block in blocks:
+                lm = link_pat.search(block)
+                if not lm:
                     continue
-                snippet = re.sub(r'<[^>]+>', '', raw_snippet).strip()
-                results.append(f"• {title.strip()}\n  {snippet}\n  URL: {url}")
-                seen.add(url)
+                href      = lm.group(1)
+                raw_title = lm.group(2)
+                sm        = snippet_pat.search(block)
+                raw_snip  = sm.group(1) if sm else ""
+                title    = re.sub(r'<[^>]+>', '', raw_title).strip()
+                snippet  = re.sub(r'<[^>]+>', '', raw_snip).strip()
+                m        = re.search(r'uddg=([^&]+)', href)
+                real_url = unquote_plus(m.group(1)) if m else href
+                if title and real_url:
+                    results.append(f"• {title}\n  {snippet}\n  URL: {real_url}")
                 if len(results) >= max_results:
                     break
-        except Exception as e:
-            if not results:
-                return f"ERROR: web search failed: {e}"
 
-    return "\n\n".join(results[:max_results]) if results else "No results found."
+            if results:
+                return "\n\n".join(results)
+            return "No results found."
+
+        except Exception as e:
+            last_err = e
+
+    return f"ERROR: web search failed after 3 attempts: {last_err}"
 
 
 def _is_safe_url(url):
@@ -1262,7 +1291,7 @@ def tool_read_url(url, max_chars=8000, selector=None):
             "Accept":     "text/html,application/xhtml+xml,text/plain;q=0.9",
             "Accept-Encoding": "identity",
         })
-        with urlopen(req, timeout=15) as r:
+        with urlopen(req) as r:
             content_type = r.headers.get("Content-Type", "")
             raw = r.read()
 
@@ -1276,7 +1305,7 @@ def tool_read_url(url, max_chars=8000, selector=None):
             raw_url = url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
             try:
                 req2 = Request(raw_url, headers={"User-Agent": "shellclaude/1.0"})
-                with urlopen(req2, timeout=10) as r2:
+                with urlopen(req2) as r2:
                     text = r2.read().decode("utf-8", errors="replace")
                 return text[:max_chars] + (f"\n… (truncated)" if len(text) > max_chars else "")
             except Exception:
@@ -1332,29 +1361,27 @@ def _parse_python_errors(output):
             highlighted.append(line)
     return "\n".join(highlighted)
 
-def tool_run_python(code, timeout=30):
-    import tempfile
+def tool_run_python(code):
     expanded = os.path.expanduser(code.strip())
     is_file = os.path.isfile(expanded)
     tmp_path = None
     if is_file:
         cmd_list = ["python3", expanded]
     else:
+        import tempfile
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py",
-                                         dir=os.getcwd(), delete=False) as tf:
+                                         dir=TOOL_TMP_DIR, delete=False) as tf:
             tf.write(code)
             tmp_path = tf.name
         cmd_list = ["python3", tmp_path]
     try:
         result = subprocess.run(
             cmd_list, capture_output=True, text=True,
-            timeout=timeout, cwd=os.getcwd()
+            cwd=os.getcwd()
         )
         out = (result.stdout + result.stderr).strip()
         out = out[:CMD_OUTPUT_MAX] if len(out) > CMD_OUTPUT_MAX else out
         return _parse_python_errors(out) if out else "(exit 0, no output)"
-    except subprocess.TimeoutExpired:
-        return f"ERROR: timed out after {timeout}s"
     except Exception as e:
         return f"ERROR: {e}"
     finally:
@@ -1362,86 +1389,114 @@ def tool_run_python(code, timeout=30):
             try: os.unlink(tmp_path)
             except OSError: pass
 
-def tool_run_node(code, timeout=30):
+
+# Flags that redirect compiler output or read arbitrary files — strip from model input
+_CLANG_BLOCKED_FLAGS = frozenset({
+    "-o", "-MF", "-MQ", "-MT", "-include", "-include-pch",
+    "-isystem", "-iprefix", "-iquote", "-isysroot",
+    "--write-user-config", "-Xlinker", "-rpath",
+})
+
+def _sanitize_clang_flags(flags_str):
+    """Parse flags with shlex, strip output-redirecting and file-reading flags."""
+    if not flags_str.strip():
+        return []
+    try:
+        parts = shlex.split(flags_str)
+    except ValueError:
+        return []
+    safe, skip_next = [], False
+    for part in parts:
+        if skip_next:
+            skip_next = False
+            continue
+        flag = part.split("=")[0]   # handle -flag=value form
+        if flag in _CLANG_BLOCKED_FLAGS:
+            skip_next = True        # also drop the following value token
+            continue
+        safe.append(part)
+    return safe
+
+def _run_clang(compiler, std_flag, suffix, code, flags=""):
     import tempfile
+    tmp_src = tmp_bin = None
     expanded = os.path.expanduser(code.strip())
-    is_file = os.path.isfile(expanded)
-    tmp_path = None
-    if is_file:
-        cmd_list = ["node", expanded]
-    else:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".js",
-                                         dir=os.getcwd(), delete=False) as tf:
-            tf.write(code)
-            tmp_path = tf.name
-        cmd_list = ["node", tmp_path]
+    is_file  = os.path.isfile(expanded)
     try:
-        result = subprocess.run(
-            cmd_list, capture_output=True, text=True,
-            timeout=timeout, cwd=os.getcwd()
+        if is_file:
+            src_path = expanded
+        else:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=suffix,
+                                             dir=TOOL_TMP_DIR, delete=False) as tf:
+                tf.write(code)
+                tmp_src = tf.name
+            src_path = tmp_src
+
+        with tempfile.NamedTemporaryFile(suffix=".out", dir=TOOL_TMP_DIR, delete=False) as tf:
+            tmp_bin = tf.name
+
+        compile_cmd = [compiler, std_flag, "-Wall", src_path, "-o", tmp_bin]
+        compile_cmd += _sanitize_clang_flags(flags)
+
+        cr = subprocess.run(compile_cmd, capture_output=True, text=True, cwd=os.getcwd())
+        compile_out = (cr.stdout + cr.stderr).strip()
+
+        if cr.returncode != 0:
+            return f"COMPILE ERROR:\n{compile_out[:CMD_OUTPUT_MAX]}"
+
+        os.chmod(tmp_bin, 0o755)
+
+        rr  = subprocess.run(
+            tmp_bin, shell=True, executable="/bin/sh",
+            capture_output=True, text=True, cwd=os.getcwd()
         )
-        out = (result.stdout + result.stderr).strip()
-        return out[:CMD_OUTPUT_MAX] if out else "(exit 0, no output)"
-    except subprocess.TimeoutExpired:
-        return f"ERROR: timed out after {timeout}s"
+        out = (rr.stdout + rr.stderr).strip()
+        out = out[:CMD_OUTPUT_MAX] if len(out) > CMD_OUTPUT_MAX else out
+
+        prefix = f"WARNINGS:\n{compile_out}\n\n" if compile_out else ""
+        return f"{prefix}{out}" if out else f"{prefix}(exit 0, no output)"
+
+    except FileNotFoundError:
+        return f"ERROR: {compiler} not found — run: pkg install clang"
     except Exception as e:
         return f"ERROR: {e}"
     finally:
-        if tmp_path:
-            try: os.unlink(tmp_path)
-            except OSError: pass
+        for p in (tmp_src, tmp_bin):
+            if p:
+                try: os.unlink(p)
+                except OSError: pass
 
-def tool_run_rust(subcommand="check", args="", timeout=120):
-    subcommand = subcommand.strip() or "check"
-    if subcommand not in ("check", "build", "run", "test", "clippy", "fmt"):
-        return f"ERROR: unknown cargo subcommand '{subcommand}'"
-    cmd = f"cargo {subcommand} {args}".strip()
-    try:
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            timeout=timeout, cwd=os.getcwd()
-        )
-        out = (result.stdout + result.stderr).strip()
-        # Highlight error/warning lines
-        lines = []
-        for line in out.splitlines():
-            if line.startswith("error") or line.startswith("  --> "):
-                lines.append(f"▶ {line}")
-            elif line.startswith("warning"):
-                lines.append(f"△ {line}")
-            else:
-                lines.append(line)
-        out = "\n".join(lines)
-        return out[:CMD_OUTPUT_MAX] if out else "(exit 0, no output)"
-    except FileNotFoundError:
-        return "ERROR: cargo not found — install Rust toolchain"
-    except subprocess.TimeoutExpired:
-        return f"ERROR: timed out after {timeout}s"
-    except Exception as e:
-        return f"ERROR: {e}"
+def tool_run_c(code, flags=""):
+    return _run_clang("clang",   "-std=c11",   ".c",   code, flags)
+
+def tool_run_cpp(code, flags=""):
+    return _run_clang("clang++", "-std=c++17", ".cpp", code, flags)
 
 
 TOOL_MAP = {
     "read_file":    lambda a: tool_read_file(a["path"], a.get("start_line"), a.get("end_line")),
     "write_file":  lambda a: tool_write_file(a["path"], a["content"], ALLOWLIST),
-    "run_command": lambda a: tool_run_command(a["cmd"], int(a.get("timeout", 30)), ALLOWLIST),
+    "run_command": lambda a: tool_run_command(a["cmd"], ALLOWLIST),
     "list_files":   lambda a: tool_list_files(a.get("path", "."), bool(a.get("recursive", False))),
     "search_files": lambda a: tool_search_files(a["pattern"], a.get("path", "."), a.get("glob")),
     "patch_file":   lambda a: tool_patch_file(a["path"], a["old_str"], a["new_str"]),
     "web_search":   lambda a: tool_web_search(a["query"], a.get("max_results", 5)),
     "read_url":     lambda a: tool_read_url(a["url"], a.get("max_chars", 8000), a.get("selector")),
-    "run_python":   lambda a: tool_run_python(a["code"], int(a.get("timeout", 30))),
-    "run_node":     lambda a: tool_run_node(a["code"], int(a.get("timeout", 30))),
-    "run_rust":     lambda a: tool_run_rust(a.get("subcommand", "check"), a.get("args", ""), int(a.get("timeout", 120))),
+    "run_python":   lambda a: tool_run_python(a["code"]),
+    "run_c":        lambda a: tool_run_c(a["code"], a.get("flags", "")),
+    "run_cpp":      lambda a: tool_run_cpp(a["code"], a.get("flags", "")),
 }
 
 
 # MCP CLIENT  (HTTP/SSE transport)
 def mcp_fetch(url, method="GET", body=None):
+    safe, reason = _is_safe_url(url)
+    if not safe:
+        raise ValueError(f"MCP URL blocked (SSRF protection — {reason})")
     req = Request(url, data=json.dumps(body).encode() if body else None,
                   headers={"Content-Type": "application/json", "Accept": "application/json"})
     req.get_method = lambda: method
-    with urlopen(req, timeout=15) as r:
+    with urlopen(req) as r:
         return json.loads(r.read())
 
 def mcp_discover(url):
@@ -1480,6 +1535,11 @@ def cmd_mcp(arg, cfg):
 
     if sub == "add" and len(parts) >= 3:
         name, url = parts[1], parts[2]
+        parsed_url = url.lower()
+        is_local   = any(h in parsed_url for h in ("localhost", "127.0.0.1", "::1"))
+        if parsed_url.startswith("http://") and not is_local:
+            pr_err(f"  ✗ Rejected: non-HTTPS MCP URL risks MITM. Use https:// or a localhost URL.")
+            return
         pr_dim(f"  Connecting to MCP server '{name}'…")
         tools = mcp_discover(url)
         builtin_names = {t["function"]["name"] for t in BASE_TOOL_DEFS}
@@ -1531,6 +1591,24 @@ def _cache_key(name, args_str):
     h = hashlib.md5(f"{name}:{args_str}".encode()).hexdigest()
     return h
 
+# Secret patterns to redact from tool outputs before sending to AI
+_SECRET_PATTERNS = re.compile(
+    r'('
+    r'sk-[A-Za-z0-9]{20,}'          r'|'  # OpenAI keys
+    r'sk-ant-[A-Za-z0-9\-]{20,}'    r'|'  # Anthropic keys
+    r'ghp_[A-Za-z0-9]{36}'          r'|'  # GitHub personal tokens
+    r'gho_[A-Za-z0-9]{36}'          r'|'  # GitHub OAuth tokens
+    r'AKIA[0-9A-Z]{16}'             r'|'  # AWS access keys
+    r'(api[_\-]?key|secret|password|token)\s*[:=]\s*["\']?[\w\-]{8,}["\']?'
+    r')',
+    re.I
+)
+
+def _redact_secrets(text):
+    """Replace secret patterns with [REDACTED] before injecting into context."""
+    return _SECRET_PATTERNS.sub("[REDACTED]", text)
+
+
 def dispatch_tool(name, args_str):
     try:
         args = json.loads(args_str) if args_str else {}
@@ -1554,12 +1632,12 @@ def dispatch_tool(name, args_str):
         fn = TOOL_MAP.get(name)
         if not fn:
             if name in PLUGIN_REGISTRY:
-                return PLUGIN_REGISTRY[name]["fn"](args)
+                return _redact_secrets(str(PLUGIN_REGISTRY[name]["fn"](args)))
             result = mcp_call_tool(name, args)
             if result is not None:
-                return result
+                return _redact_secrets(str(result))
             return f"ERROR: Unknown tool '{name}'"
-        result = fn(args)
+        result = _redact_secrets(str(fn(args)))
 
         if name in CACHEABLE_TOOLS:
             TOOL_CACHE[_cache_key(name, args_str)] = result
@@ -1898,12 +1976,16 @@ def _api_headers(cfg):
     }
 
 def _track_cost(cfg, usage):
-    global SESSION_COST
+    global SESSION_COST, _LAST_MSG_COST
     inp_price, out_price = get_pricing(cfg["model"])
     if inp_price is not None:
         inp = usage.get("prompt_tokens") or usage.get("input_tokens", 0)
         out = usage.get("completion_tokens") or usage.get("output_tokens", 0)
-        SESSION_COST += (inp * inp_price + out * out_price) / 1_000_000
+        delta = (inp * inp_price + out * out_price) / 1_000_000
+        SESSION_COST    += delta
+        _LAST_MSG_COST   = delta
+    else:
+        _LAST_MSG_COST = 0.0
 
 def _with_retry(fn, retries=3):
     last_err = None
@@ -1920,7 +2002,7 @@ def _with_retry(fn, retries=3):
                 last_err = err
             else:
                 raise err
-    raise last_err
+    raise last_err or RuntimeError("all retries exhausted")
 
 def _debug_print(label, obj):
     if not _DEBUG:
@@ -1947,7 +2029,7 @@ def api_call(cfg, messages, retries=3):
 
     def do_request(attempt):
         req = Request(url, data=body, headers=headers)
-        with urlopen(req, timeout=90) as r:
+        with urlopen(req) as r:
             data = json.loads(r.read())
         _debug_print("RESPONSE", data)
         if is_anthropic:
@@ -2048,7 +2130,7 @@ def api_call_stream(cfg, messages, retries=3):
             print(f"\033[90m◆\033[0m", flush=True)   # dim turn marker, own line
 
         try:
-            with urlopen(req, timeout=90) as r:
+            with urlopen(req) as r:
                 for raw_line in r:
                     if _CANCEL.is_set():
                         break
@@ -2220,11 +2302,20 @@ Rules:
     try:
         resp = api_call(cfg, messages + [{"role": "user", "content": summary_req}])
         summary = resp["choices"][0]["message"].get("content", "")
-        # Preserve pinned messages
-        pinned = [_clean_messages([m])[0] for m in messages if m.get("_pinned")]
+        pinned = []
+        for m in messages:
+            if m.get("_pinned"):
+                cleaned = _clean_messages([m])[0]
+                cleaned["_pinned"] = True
+                pinned.append(cleaned)
         new_msgs = [{"role": "assistant", "content": f"[Auto-compacted context]\n{summary}"}]
         new_msgs.extend(pinned)
+        # Sync DB: remove all old messages and write the compacted summary
+        conn.execute("DELETE FROM messages WHERE session_id=?", (sid,))
         db_save_msg(conn, sid, "assistant", f"[Auto-compacted context]\n{summary}")
+        for m in pinned:
+            db_save_msg(conn, sid, m["role"], m.get("content", ""))
+        conn.commit()
         pin_note = f" (+{len(pinned)} pinned)" if pinned else ""
         pr_info(f"  ✓ Compacted → ~{estimate_tokens(new_msgs)[0]} tokens{pin_note}")
         return new_msgs
@@ -2236,7 +2327,7 @@ Rules:
 # Tool phase classification for UI indicators
 _PHASE_GATHER  = frozenset(("read_file", "list_files", "search_files", "web_search", "read_url"))
 _PHASE_ACT     = frozenset(("write_file", "patch_file"))
-_PHASE_VERIFY  = frozenset(("run_python", "run_node", "run_rust"))
+_PHASE_VERIFY  = frozenset(("run_python", "run_c", "run_cpp"))
 # run_command is classified dynamically by content
 
 def _classify_phase(name, args_str):
@@ -2325,7 +2416,7 @@ def agent_loop(cfg, conn, sid, messages, user_msg):
         if tcalls:
             asst_entry["tool_calls"] = tcalls
         messages.append(asst_entry)
-        db_save_msg(conn, sid, "assistant", text, tcalls, thinking)
+        db_save_msg(conn, sid, "assistant", text, tcalls, thinking, cost=_LAST_MSG_COST)
 
         # Display thinking block separately if present
         if thinking:
@@ -2764,8 +2855,9 @@ def main():
     invalidate_tool_defs_cache()
     SKILLS_REGISTRY = load_skills()
     ALLOWLIST = load_allowlist()
-    os.makedirs(SNIPPETS_DIR, exist_ok=True)
-    os.makedirs(PERSONAS_DIR, exist_ok=True)
+    os.makedirs(SNIPPETS_DIR,  exist_ok=True)
+    os.makedirs(PERSONAS_DIR,  exist_ok=True)
+    os.makedirs(TOOL_TMP_DIR,  exist_ok=True)
     load_agents_md(cfg)
     for name, url in cfg.get("mcp_servers", {}).items():
         pr_dim(f"  Reconnecting MCP '{name}'…")
@@ -3064,7 +3156,8 @@ def main():
                 cmd_allowlist(arg)
 
             elif cmd == "sessions":
-                rows = db_list_sessions(conn)
+                tag_filter = arg.strip() or None
+                rows = db_list_sessions(conn, tag=tag_filter)
                 if not rows:
                     pr_dim("No sessions yet.")
                 elif _RICH:
@@ -3447,13 +3540,11 @@ def main():
                     r = subprocess.run(
                         ["git"] + git_args,
                         capture_output=True, text=True,
-                        timeout=20, cwd=os.getcwd()
+                        cwd=os.getcwd()
                     )
                     out = (r.stdout + r.stderr).strip()
                 except FileNotFoundError:
                     out = "ERROR: git not found"
-                except subprocess.TimeoutExpired:
-                    out = "ERROR: git timed out"
                 except Exception as e:
                     out = f"ERROR: {e}"
                 pr_dim(out[:DISPLAY_RUN_MAX])
