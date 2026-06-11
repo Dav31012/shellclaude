@@ -20,7 +20,10 @@ export ANTHROPIC_API_KEY=
 shellclaude.py
 ```
 
-First run sets up your model and endpoint. Settings save to `~/Documents/shellclaude.json`.
+First run sets up your model and endpoint. Settings save to `~/Documents/shellclaude/shellclaude.json`.
+
+# VERY IMPORTANT
+if you used shellclaude before 1.6.0 you'll have to move ~/Documents/shellclaude.json and ~/Documents/shellclaude.db to ~/Documents/shellclaude/
 
 ## Tools
 
