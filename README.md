@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org)
 ![Platform](https://img.shields.io/badge/Platform-iOS%20%2F%20iPadOS-brightgreen)
 
-Terminal coding tool for [a-Shell](https://github.com/holzschu/a-Shell). Supports OpenAI, Anthropic, and compatible endpoints.
+Terminal coding tool for [a-Shell](https://github.com/holzschu/a-Shell). Supports OpenAI and Anthropic endpoints.
 
 ## shellclaude v1.6.0
 
