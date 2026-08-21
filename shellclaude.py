@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""shellclaude v1.6.0 — Inspired by opencode and openclaude. Supports OpenAI-compatible and Anthropic endpoints."""
+"""shellclaude v1.6.1 — Inspired by opencode and openclaude. Supports OpenAI-compatible and Anthropic endpoints."""
 
 import os, json, sqlite3, subprocess, difflib, time, hashlib, importlib.util, re, random, shlex
 from contextlib import nullcontext
 from datetime import datetime
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus, unquote_plus
 
 try:
@@ -27,8 +27,8 @@ except ImportError:
 
 # CONFIG
 
-CFG_PATH = os.path.expanduser("~/Documents/shellclaude/shellclaude.json")
-DB_PATH  = os.path.expanduser("~/Documents/shellclaude/shellclaude.db")
+CFG_PATH = os.path.expanduser("~/Documents/shellclaude.json")
+DB_PATH  = os.path.expanduser("~/Documents/shellclaude.db")
 ALLOWLIST_PATH = os.path.expanduser("~/Documents/shellclaude/allowlist.txt")
 
 DEFAULT_CFG = {
@@ -80,6 +80,7 @@ _DEBUG           = False  # /debug on|off
 _DIFF_MODE       = False  # /diff on — show changes without writing
 _SAFE_MODE       = False  # /safe on — all tool calls need confirmation
 MAX_ITERS        = 32     # max agentic iterations per turn
+_STUCK_WINDOW    = 3      # identical tool calls in a row = stuck loop
 _TURN_BUDGET     = None   # /budget N — max iters this turn only (None = use MAX_ITERS)
 _THINKING_BUDGET = None   # /thinking-budget N — anthropic extended thinking budget tokens
 
@@ -130,9 +131,62 @@ MODEL_PRICING = {
     "mistral-small":    (0.20,   0.60),
 }
 
+# Live metadata fetched from /v1/models at startup (works with OpenRouter + compatible providers)
+# Falls back to hardcoded dicts above when endpoint doesn't return context_length/pricing
+_MODEL_METADATA_CACHE = {}   # model_id -> {"context_window": int|None, "inp_price": float|None, "out_price": float|None}
+
+def _fetch_model_list(cfg):
+    """Fetch model list from {base_url}/models, extract context window + pricing.
+    Silently no-ops if endpoint doesn't return those fields (direct OpenAI/Anthropic)."""
+    global _MODEL_METADATA_CACHE
+    base = (cfg.get("base_url") or "").rstrip("/")
+    if not base:
+        return
+    key = cfg.get("api_key", "")
+    try:
+        models_url = f"{base}/models"
+        safe, reason = _is_safe_url(models_url)
+        if not safe:
+            return
+        req = Request(models_url, headers={"Authorization": f"Bearer {key}"})
+        with urlopen(req) as r:
+            data = json.loads(r.read())
+        count = 0
+        for m in data.get("data", []):
+            mid = m.get("id", "")
+            if not mid:
+                continue
+            ctx = (m.get("context_length")
+                   or (m.get("top_provider") or {}).get("context_length"))
+            pricing = m.get("pricing") or {}
+            raw_inp = pricing.get("prompt")
+            raw_out = pricing.get("completion")
+            try:
+                inp = float(raw_inp) * 1_000_000 if raw_inp else None
+                out = float(raw_out) * 1_000_000 if raw_out else None
+            except (ValueError, TypeError):
+                inp = out = None
+            if ctx or inp:
+                _MODEL_METADATA_CACHE[mid] = {
+                    "context_window": int(ctx) if ctx else None,
+                    "inp_price":      inp,
+                    "out_price":      out,
+                }
+                count += 1
+        if count:
+            pr_dim(f"  Fetched live metadata for {count} models")
+    except Exception:
+        pass   # silent — hardcoded dicts are the fallback
+
 def get_pricing(model):
+    # Live pricing first (OpenRouter + compatible providers)
+    meta = _MODEL_METADATA_CACHE.get(model) or {}
+    inp  = meta.get("inp_price")
+    out  = meta.get("out_price")
+    if inp is not None and out is not None:
+        return inp, out
+    # Hardcoded fallback
     m = model.lower()
-    # Sort by key length descending so "gpt-4o" matches before "gpt-4"
     for key, (inp, out) in sorted(MODEL_PRICING.items(), key=lambda x: len(x[0]), reverse=True):
         if m.startswith(key) or key in m.split("/")[-1]:
             return inp, out
@@ -252,8 +306,8 @@ Because of this, the following constructs are blocked and will not run:
 
 What does work:
 
-- **Sequential chains**: `cmd1 && cmd2`, `cmd1 || cmd2`, `cmd1 ; cmd2`. The system splits \
-  these and runs them one at a time.
+- **Sequential chains**: `cmd1 && cmd2` and `cmd1 || cmd2` work. Semicolon chains (`;`) \
+  are blocked by the safety filter — use `&&` or make separate run_command calls.
 - **Built-in tools**: search_files (rg), read_file, and list_files are native, safe, and \
   never hang. Strongly prefer them over shell pipelines for file exploration and filtering.
 
@@ -657,6 +711,12 @@ MODEL_CONTEXT_WINDOWS = {
 }
 
 def get_context_window(model):
+    # Live metadata first (OpenRouter + compatible providers)
+    meta = _MODEL_METADATA_CACHE.get(model) or {}
+    ctx  = meta.get("context_window")
+    if ctx:
+        return ctx
+    # Hardcoded fallback
     m = model.lower()
     for key, size in sorted(MODEL_CONTEXT_WINDOWS.items(), key=lambda x: len(x[0]), reverse=True):
         if m.startswith(key) or key in m.split("/")[-1]:
@@ -731,7 +791,7 @@ def clip_text(text):
             r = subprocess.run(cmd, input=text.encode(), capture_output=True)
             if r.returncode == 0:
                 return True
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError, NotImplementedError):
             continue
     return False
 
@@ -892,6 +952,39 @@ def invalidate_tool_defs_cache():
 
 # TOOL IMPLEMENTATIONS
 
+def _exec_shell(cmd, timeout=30):
+    """Run a shell command string. Returns (combined_output, returncode).
+    Falls back to os.system + temp file on platforms without fork (a-Shell)."""
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                           cwd=os.getcwd(), timeout=timeout)
+        return (r.stdout + r.stderr).strip(), r.returncode
+    except subprocess.TimeoutExpired:
+        return f"ERROR: command timed out after {timeout}s", 124
+    except (OSError, NotImplementedError):
+        os.makedirs(TOOL_TMP_DIR, exist_ok=True)
+        out_file = os.path.join(TOOL_TMP_DIR, "cmd_out.txt")
+        rc = os.system(f'{cmd} > "{out_file}" 2>&1')
+        try:
+            with open(out_file, errors="replace") as f:
+                return f.read().strip(), rc
+        except OSError:
+            return "(no output)", rc
+
+def _exec_argv(argv, timeout=30):
+    """Run a command given as an argv list. Returns (combined_output, returncode).
+    Raises FileNotFoundError so callers can detect missing binaries."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True,
+                           cwd=os.getcwd(), timeout=timeout)
+        return (r.stdout + r.stderr).strip(), r.returncode
+    except subprocess.TimeoutExpired:
+        return f"ERROR: command timed out after {timeout}s", 124
+    except FileNotFoundError:
+        raise
+    except (OSError, NotImplementedError):
+        return _exec_shell(" ".join(shlex.quote(a) for a in argv), timeout)
+
 
 # Files the AI must never read — contains credentials or shellclaude internals
 _SENSITIVE_READ_PATHS = frozenset([
@@ -1026,49 +1119,49 @@ def tool_write_file(path, content, allowlist=None):
     except Exception as e:
         return f"ERROR: {e}"
 
+# Hard-blocked command patterns — pre-compiled once at module load.
+# Never run regardless of allowlist. Covers the most common ways a model
+# could be manipulated into destroying data, installing persistence, or exfiltrating secrets.
+_BLOCKED_PATTERNS = [
+    # Disk destruction
+    (re.compile(r'\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-[a-zA-Z]*r[a-zA-Z]*\s+/', re.I), "recursive rm of root path"),
+    (re.compile(r'\bmkfs\b',                                                      re.I), "filesystem format"),
+    (re.compile(r'\bdd\b.+\bof=/dev/',                                            re.I), "dd write to device"),
+    (re.compile(r'>\s*/dev/s[dr][a-z]',                                           re.I), "redirect to block device"),
+    # Privilege escalation
+    (re.compile(r'\bsudo\b',                                                       re.I), "sudo"),
+    (re.compile(r'\bsu\s+-',                                                       re.I), "su root"),
+    (re.compile(r'\bchmod\s+[0-7]*[s][0-7]+',                                    re.I), "setuid chmod"),
+    # Persistence / cron / launch agents
+    (re.compile(r'\bcrontab\b',                                                    re.I), "crontab modification"),
+    (re.compile(r'launchctl\s+load',                                              re.I), "launchctl load"),
+    (re.compile(r'~/Library/LaunchAgents',                                        re.I), "LaunchAgent write"),
+    # Network exfiltration
+    (re.compile(r'\bcurl\b.+-d\b.+(api_key|token|secret|password)',              re.I), "credential exfiltration via curl"),
+    (re.compile(r'\bwget\b.+--post-data.+(api_key|token|secret|password)',        re.I), "credential exfiltration via wget"),
+    # Shell tricks
+    (re.compile(r';\s*rm\b',                                                       re.I), "chained rm"),
+    (re.compile(r';\s*[a-zA-Z_/]',                                                re.I), "chained command via semicolon"),
+    (re.compile(r'\|\s*sh\b',                                                      re.I), "pipe to sh"),
+    (re.compile(r'\|\s*bash\b',                                                    re.I), "pipe to bash"),
+    (re.compile(r'base64\s+-d.+\|\s*(sh|bash|python)',                           re.I), "base64-decoded shell execution"),
+    # Fork bomb
+    (re.compile(r':\(\)\s*\{',                                                     re.I), "fork bomb"),
+    # a-Shell single-process violations — these hang the app permanently
+    (re.compile(r'^[^#]*[^|]\|[^|]',                                              re.I), "pipes hang a-Shell (single-process rule) — use search_files or a temp file"),
+    (re.compile(r'\$\([^)]+\)|`[^`]+`',                                           re.I), "command substitution hangs a-Shell — run commands separately"),
+    (re.compile(r'[^\S\r\n]+&\s*$',                                               re.I), "background execution hangs a-Shell — run in foreground"),
+    (re.compile(r'<\([^)]+\)',                                                     re.I), "process substitution hangs a-Shell — use a temp file"),
+    (re.compile(r'<<<\s*["\']',                                                   re.I), "here-strings are a bashism — use echo or python3 -c"),
+    (re.compile(r'#!/bin/bash|bash\s+-c',                                        re.I), "bash not available on iOS — use sh or python3"),
+]
+
 def tool_run_command(cmd, allowlist=None):
     allowlist = allowlist or []
 
-    # Hard-blocked patterns — never run regardless of allowlist.
-    # These cover the most common ways a model could be manipulated into
-    # destroying data, installing persistence, or exfiltrating secrets.
-    BLOCKED_PATTERNS = [
-        # Disk destruction
-        (r'\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-[a-zA-Z]*r[a-zA-Z]*\s+/', "recursive rm of root path"),
-        (r'\bmkfs\b',                                                      "filesystem format"),
-        (r'\bdd\b.+\bof=/dev/',                                            "dd write to device"),
-        (r'>\s*/dev/s[dr][a-z]',                                           "redirect to block device"),
-        # Privilege escalation
-        (r'\bsudo\b',                                                       "sudo"),
-        (r'\bsu\s+-',                                                       "su root"),
-        (r'\bchmod\s+[0-7]*[s][0-7]+',                                    "setuid chmod"),
-        # Persistence / cron / launch agents
-        (r'\bcrontab\b',                                                    "crontab modification"),
-        (r'launchctl\s+load',                                              "launchctl load"),
-        (r'~/Library/LaunchAgents',                                        "LaunchAgent write"),
-        # Network exfiltration
-        (r'\bcurl\b.+-d\b.+(api_key|token|secret|password)',              "credential exfiltration via curl"),
-        (r'\bwget\b.+--post-data.+(api_key|token|secret|password)',        "credential exfiltration via wget"),
-        # Shell tricks
-        (r';\s*rm\b',                                                       "chained rm"),
-        (r';\s*[a-zA-Z_/]',                                                "chained command via semicolon"),
-        (r'\|\s*sh\b',                                                      "pipe to sh"),
-        (r'\|\s*bash\b',                                                    "pipe to bash"),
-        (r'base64\s+-d.+\|\s*(sh|bash|python)',                           "base64-decoded shell execution"),
-        # Fork bomb
-        (r':\(\)\s*\{',                                                     "fork bomb"),
-        # a-Shell single-process violations — these hang the app permanently
-        (r'^[^#]*[^|]\|[^|]',                                              "pipes hang a-Shell (single-process rule) — use search_files or a temp file"),
-        (r'\$\([^)]+\)|`[^`]+`',                                           "command substitution hangs a-Shell — run commands separately"),
-        (r'[^\S\r\n]+&\s*$',                                               "background execution hangs a-Shell — run in foreground"),
-        (r'<\([^)]+\)',                                                     "process substitution hangs a-Shell — use a temp file"),
-        (r'<<<\s*["\']',                                                   "here-strings are a bashism — use echo or python3 -c"),
-        (r'#!/bin/bash|bash\s+-c',                                        "bash not available on iOS — use sh or python3"),
-    ]
-
     cmd_stripped = cmd.strip()
-    for pattern, reason in BLOCKED_PATTERNS:
-        if re.search(pattern, cmd_stripped, re.I):
+    for pattern, reason in _BLOCKED_PATTERNS:
+        if pattern.search(cmd_stripped):
             pr_err(f"  ✗ Command blocked ({reason}): {cmd_stripped[:120]}")
             return f"BLOCKED: command matched blocked pattern ({reason})"
 
@@ -1094,12 +1187,7 @@ def tool_run_command(cmd, allowlist=None):
             allowlist.append(entry)
             save_allowlist(allowlist)
     try:
-        result = subprocess.run(
-            cmd, shell=True, executable="/bin/sh",
-            capture_output=True, text=True,
-            cwd=os.getcwd()
-        )
-        out = (result.stdout + result.stderr).strip()
+        out, _rc = _exec_shell(cmd, timeout=60)
         if len(out) > CMD_OUTPUT_MAX:
             out = out[:CMD_OUTPUT_MAX] + "\n... (truncated)"
         return out if out else "(exit 0, no output)"
@@ -1123,8 +1211,8 @@ def tool_list_files(path=".", recursive=False):
                 return "\n".join(
                     os.path.relpath(l, path) for l in lines
                 ) if lines else "(no files)"
-            except FileNotFoundError:
-                # rg not available — fall back to os.walk (no gitignore filtering)
+            except (FileNotFoundError, OSError, NotImplementedError):
+                # rg not available or no subprocess support — fall back to os.walk
                 result = []
                 for root, dirs, files in os.walk(path):
                     dirs[:] = [d for d in sorted(dirs) if not d.startswith(".")]
@@ -1151,10 +1239,7 @@ def tool_search_files(pattern, path=".", glob=None):
         args = ["rg", "--color=never", "-n", pattern, os.path.expanduser(path)]
         if glob:
             args += ["-g", glob]
-        result = subprocess.run(
-            args, capture_output=True, text=True, cwd=os.getcwd()
-        )
-        out = (result.stdout + result.stderr).strip()
+        out, _rc = _exec_argv(args)
         if len(out) > CMD_OUTPUT_MAX:
             out = out[:CMD_OUTPUT_MAX] + "\n... (truncated)"
         return out if out else "(no matches)"
@@ -1199,6 +1284,11 @@ _SEARCH_UAS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 ]
+_DDG_LINK_PAT    = re.compile(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.I | re.S)
+_DDG_SNIPPET_PAT = re.compile(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', re.I | re.S)
+_DDG_BLOCK_PAT   = re.compile(r'(?=<div[^>]+class="[^"]*\bresult\b[^"]*")', re.I)
+_DDG_STRIP_PAT   = re.compile(r'<[^>]+>')
+_DDG_UDDG_PAT    = re.compile(r'uddg=([^&]+)')
 
 def tool_web_search(query, max_results=5):
     max_results = max(1, min(10, int(max_results)))
@@ -1219,11 +1309,11 @@ def tool_web_search(query, max_results=5):
             with urlopen(req) as r:
                 html = r.read().decode("utf-8", errors="replace")
 
-            link_pat    = re.compile(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.I | re.S)
-            snippet_pat = re.compile(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', re.I | re.S)
+            link_pat    = _DDG_LINK_PAT
+            snippet_pat = _DDG_SNIPPET_PAT
 
             # Parse per result block to keep link+snippet aligned
-            blocks  = re.split(r'(?=<div[^>]+class="[^"]*\bresult\b[^"]*")', html)
+            blocks  = _DDG_BLOCK_PAT.split(html)
             results = []
             for block in blocks:
                 lm = link_pat.search(block)
@@ -1233,9 +1323,9 @@ def tool_web_search(query, max_results=5):
                 raw_title = lm.group(2)
                 sm        = snippet_pat.search(block)
                 raw_snip  = sm.group(1) if sm else ""
-                title    = re.sub(r'<[^>]+>', '', raw_title).strip()
-                snippet  = re.sub(r'<[^>]+>', '', raw_snip).strip()
-                m        = re.search(r'uddg=([^&]+)', href)
+                title    = _DDG_STRIP_PAT.sub('', raw_title).strip()
+                snippet  = _DDG_STRIP_PAT.sub('', raw_snip).strip()
+                m        = _DDG_UDDG_PAT.search(href)
                 real_url = unquote_plus(m.group(1)) if m else href
                 if title and real_url:
                     results.append(f"• {title}\n  {snippet}\n  URL: {real_url}")
@@ -1375,11 +1465,7 @@ def tool_run_python(code):
             tmp_path = tf.name
         cmd_list = ["python3", tmp_path]
     try:
-        result = subprocess.run(
-            cmd_list, capture_output=True, text=True,
-            cwd=os.getcwd()
-        )
-        out = (result.stdout + result.stderr).strip()
+        out, _rc = _exec_argv(cmd_list, timeout=60)
         out = out[:CMD_OUTPUT_MAX] if len(out) > CMD_OUTPUT_MAX else out
         return _parse_python_errors(out) if out else "(exit 0, no output)"
     except Exception as e:
@@ -1412,7 +1498,8 @@ def _sanitize_clang_flags(flags_str):
             continue
         flag = part.split("=")[0]   # handle -flag=value form
         if flag in _CLANG_BLOCKED_FLAGS:
-            skip_next = True        # also drop the following value token
+            if "=" not in part:
+                skip_next = True    # value is a separate token — drop it too
             continue
         safe.append(part)
     return safe
@@ -1438,19 +1525,14 @@ def _run_clang(compiler, std_flag, suffix, code, flags=""):
         compile_cmd = [compiler, std_flag, "-Wall", src_path, "-o", tmp_bin]
         compile_cmd += _sanitize_clang_flags(flags)
 
-        cr = subprocess.run(compile_cmd, capture_output=True, text=True, cwd=os.getcwd())
-        compile_out = (cr.stdout + cr.stderr).strip()
+        compile_out, compile_rc = _exec_argv(compile_cmd, timeout=120)
 
-        if cr.returncode != 0:
+        if compile_rc != 0:
             return f"COMPILE ERROR:\n{compile_out[:CMD_OUTPUT_MAX]}"
 
         os.chmod(tmp_bin, 0o755)
 
-        rr  = subprocess.run(
-            tmp_bin, shell=True, executable="/bin/sh",
-            capture_output=True, text=True, cwd=os.getcwd()
-        )
-        out = (rr.stdout + rr.stderr).strip()
+        out, _rc = _exec_shell(f'"{tmp_bin}"', timeout=60)
         out = out[:CMD_OUTPUT_MAX] if len(out) > CMD_OUTPUT_MAX else out
 
         prefix = f"WARNINGS:\n{compile_out}\n\n" if compile_out else ""
@@ -1689,6 +1771,10 @@ def db_init():
             conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {'TEXT' if col in ('tags','thinking','branch') else ('INTEGER DEFAULT 0' if col == 'pinned' else 'REAL DEFAULT 0')}")
         except sqlite3.OperationalError:
             pass
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN tool_call_id TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return conn
 
@@ -1707,13 +1793,14 @@ def db_update_cwd(conn, sid):
     conn.execute("UPDATE sessions SET cwd=? WHERE id=?", (os.getcwd(), sid))
     conn.commit()
 
-def db_save_msg(conn, sid, role, content, tool_calls=None, thinking=None, cost=0):
+def db_save_msg(conn, sid, role, content, tool_calls=None, thinking=None, cost=0, tool_call_id=None):
     conn.execute(
-        "INSERT INTO messages (session_id, role, content, thinking, tool_calls, cost, ts) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO messages (session_id, role, content, thinking, tool_calls, cost, ts, tool_call_id) VALUES (?,?,?,?,?,?,?,?)",
         (sid, role, content, thinking,
          json.dumps(tool_calls) if tool_calls else None,
          cost,
-         datetime.now().isoformat())
+         datetime.now().isoformat(),
+         tool_call_id)
     )
     conn.commit()
 
@@ -1741,12 +1828,14 @@ def db_load_session(conn, sid, branch_name=None):
         except OSError:
             pass
     rows = conn.execute(
-        "SELECT id, role, content, thinking, tool_calls, cost, pinned FROM messages WHERE session_id=? ORDER BY id",
+        "SELECT id, role, content, thinking, tool_calls, cost, pinned, tool_call_id FROM messages WHERE session_id=? ORDER BY id",
         (sid,)
     ).fetchall()
     msgs = []
-    for msg_id, role, content, thinking, tc, cost, pinned in rows:
+    for msg_id, role, content, thinking, tc, cost, pinned, tc_id in rows:
         m = {"role": role, "content": content or "", "_db_id": msg_id, "_pinned": bool(pinned)}
+        if role == "tool" and tc_id:
+            m["tool_call_id"] = tc_id
         if thinking:
             m["thinking"] = thinking
         if tc:
@@ -2002,6 +2091,14 @@ def _with_retry(fn, retries=3):
                 last_err = err
             else:
                 raise err
+        except URLError as e:
+            if attempt < retries - 1:
+                wait = 2 ** attempt
+                pr_dim(f"  network error ({e.reason}) — retrying in {wait}s…")
+                time.sleep(wait)
+                last_err = RuntimeError(f"network error: {e.reason}")
+            else:
+                raise RuntimeError(f"network error: {e.reason}")
     raise last_err or RuntimeError("all retries exhausted")
 
 def _debug_print(label, obj):
@@ -2391,7 +2488,7 @@ def agent_loop(cfg, conn, sid, messages, user_msg):
                 with console.status("[dim]thinking…[/dim]", spinner="dots") if _RICH \
                         else nullcontext() as _:
                     resp = api_call(cfg, messages)
-        except RuntimeError as e:
+        except (RuntimeError, OSError) as e:
             print_error(f"API error: {e}")
             return messages
 
@@ -2432,6 +2529,7 @@ def agent_loop(cfg, conn, sid, messages, user_msg):
             else:
                 pr_asst(f"◆ {text}")
 
+        _stuck = False
         if not tcalls:
             if text:
                 print_separator()
@@ -2454,9 +2552,11 @@ def agent_loop(cfg, conn, sid, messages, user_msg):
                 print_phase(phase)
                 _last_phase = phase
 
-            # Run tool — catch both soft cancel and hard interrupt
+            # Run tool — catch both soft cancel and hard interrupt.
+            # No spinner for tools that may call input() (permission prompts).
             result = "ERROR: tool did not return a result"
-            if _RICH:
+            _may_prompt = _SAFE_MODE or name in ("write_file", "patch_file", "run_command")
+            if _RICH and not _may_prompt:
                 try:
                     with console.status(f"[dim]{name}…[/dim]", spinner="dots"):
                         result = dispatch_tool(name, args)
@@ -2487,23 +2587,35 @@ def agent_loop(cfg, conn, sid, messages, user_msg):
             hint = _ios_hint(result_str) if result_str.startswith("ERROR:") else None
             print_tool_call(name, args_display, result_display, hint)
 
-            # Stuck-loop detection
-            call_sig = f"{phase}:{name}:{hashlib.md5(args.encode() if isinstance(args,str) else json.dumps(args,sort_keys=True).encode()).hexdigest()[:8]}"
-            tool_history.append(call_sig)
-            if _detect_stuck(tool_history):
-                print_error(f"Stuck loop detected — same tool call repeated {_STUCK_WINDOW}x. Stopping.")
-                messages.append({
-                    "role": "user",
-                    "content": "[SYSTEM] Loop detected: you have called the same tool with the same arguments multiple times in a row. Stop, reconsider your approach, and respond to the user with what you found so far."
-                })
-                break
-
             messages.append({
                 "role":         "tool",
                 "tool_call_id": tc["id"],
                 "content":      result_str,
             })
-            db_save_msg(conn, sid, "tool", result_str)
+            db_save_msg(conn, sid, "tool", result_str, tool_call_id=tc["id"])
+
+            # Stuck-loop detection
+            call_sig = f"{phase}:{name}:{hashlib.md5(args.encode() if isinstance(args,str) else json.dumps(args,sort_keys=True).encode()).hexdigest()[:8]}"
+            tool_history.append(call_sig)
+            if _detect_stuck(tool_history):
+                print_error(f"Stuck loop detected — same tool call repeated {_STUCK_WINDOW}x. Stopping.")
+                # Answer every remaining tool call so the API history stays valid
+                answered = {m.get("tool_call_id") for m in messages if m.get("role") == "tool"}
+                for tc2 in tcalls:
+                    if tc2["id"] not in answered:
+                        messages.append({"role": "tool", "tool_call_id": tc2["id"],
+                                         "content": "ERROR: cancelled (stuck loop detected)"})
+                        db_save_msg(conn, sid, "tool", "ERROR: cancelled (stuck loop detected)",
+                                    tool_call_id=tc2["id"])
+                messages.append({
+                    "role": "user",
+                    "content": "[SYSTEM] Loop detected: you have called the same tool with the same arguments multiple times in a row. Stop, reconsider your approach, and respond to the user with what you found so far."
+                })
+                _stuck = True
+                break
+
+        if _stuck:
+            break
 
     else:
         print_error(f"Reached max iterations ({max_iters}). Stopping.")
@@ -2819,7 +2931,7 @@ def print_banner(cfg, sid):
         from rich.columns import Columns
         console.print()
         console.print(Panel(
-            "[bold green]shellclaude[/bold green] [dim]v1.5.0 · coding CLI · a-Shell · iOS[/dim]\n"
+            "[bold green]shellclaude[/bold green] [dim]v1.6.1 · coding CLI · a-Shell · iOS[/dim]\n"
             f"[dim]model:[/dim] [cyan]{cfg['model'] or 'not set'}[/cyan]  "
             f"[dim]endpoint:[/dim] [cyan]{ep}[/cyan]  "
             f"[dim]key:[/dim] [cyan]{src}[/cyan]  "
@@ -2832,7 +2944,7 @@ def print_banner(cfg, sid):
         ))
         console.print("[dim]/help[/dim] for commands · [dim]/exit[/dim] to quit · type [dim]c[/dim] + Enter to cancel\n")
     else:
-        print(f"\n  shellclaude v1.5.0 · {ep} · session #{sid}")
+        print(f"\n  shellclaude v1.6.1 · {ep} · session #{sid}")
         print(f"  model: {cfg['model']}  key: {src}  cwd: {os.getcwd()}\n")
 
 
@@ -2863,12 +2975,12 @@ def main():
         pr_dim(f"  Reconnecting MCP '{name}'…")
         tools = mcp_discover(url)
         MCP_SERVERS[name] = {"url": url, "tools": tools}
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = db_init()
     sid  = db_new_session(conn)
     msgs = []
 
     print_banner(cfg, sid)
+    _fetch_model_list(cfg)
 
     ep = cfg.get("endpoint_type", "openai")
     if not cfg["api_key"]:
@@ -2957,6 +3069,8 @@ def main():
                     cfg["model"] = arg
                     save_cfg(cfg)
                     pr_info(f"Model → {arg}")
+                    if arg not in _MODEL_METADATA_CACHE:
+                        _fetch_model_list(cfg)
                 else:
                     pr_info(f"Current: {cfg['model']}")
 
@@ -2967,6 +3081,7 @@ def main():
                     pr_info(f"URL → {cfg['base_url']}")
                     if arg.startswith("http://") and "localhost" not in arg and "127.0.0.1" not in arg:
                         pr_err("  ⚠  Plain HTTP: API key and conversation sent unencrypted!")
+                    _fetch_model_list(cfg)
                 else:
                     pr_info(cfg["base_url"])
 
@@ -3075,6 +3190,8 @@ def main():
                         SYSTEM = arg
                     pr_info(f"System prompt set ({len(arg)} chars)")
                     pr_dim("  Tip: /system save <name> to save as template")
+
+            elif cmd == "pick":
                 msgs = cmd_pick(arg, msgs, conn, sid)
 
             elif cmd == "export":
@@ -3537,17 +3654,18 @@ def main():
                         continue
                 # Use list form — no shell=True, no injection
                 git_args = resolved.split()
-                try:
-                    r = subprocess.run(
-                        ["git"] + git_args,
-                        capture_output=True, text=True,
-                        cwd=os.getcwd()
-                    )
-                    out = (r.stdout + r.stderr).strip()
-                except FileNotFoundError:
-                    out = "ERROR: git not found"
-                except Exception as e:
-                    out = f"ERROR: {e}"
+                out = None
+                for git_bin in ("git", "lg2"):
+                    try:
+                        out, _rc = _exec_argv([git_bin] + git_args)
+                        break
+                    except FileNotFoundError:
+                        continue
+                    except Exception as e:
+                        out = f"ERROR: {e}"
+                        break
+                if out is None:
+                    out = "ERROR: neither git nor lg2 found (pkg install lg2)"
                 pr_dim(out[:DISPLAY_RUN_MAX])
 
             elif cmd == "scope":
